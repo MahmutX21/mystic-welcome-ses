@@ -1,7 +1,7 @@
 {
   "name": "railway-discord-voice-welcome-bot",
   "version": "1.0.0",
-  "description": "Seste kalan ve giren kisinin ismini yazip silen Discord botu",
+  "description": "Discord bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
