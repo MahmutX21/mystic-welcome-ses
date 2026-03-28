@@ -1,3 +1,4 @@
+// dotenv sadece lokal için (Railway'de sorun çıkarmaz)
 require("dotenv").config();
 
 const express = require("express");
@@ -16,7 +17,7 @@ const {
 } = require("@discordjs/voice");
 
 // =========================
-// ENV
+// ENV (Railway buradan okuyacak)
 // =========================
 const TOKEN = process.env.TOKEN;
 const GUILD_ID = process.env.GUILD_ID;
@@ -26,16 +27,16 @@ const DELETE_AFTER_MS = Number(process.env.DELETE_AFTER_MS || 5000);
 const PORT = Number(process.env.PORT || 3000);
 
 // =========================
-// Basit web server (Railway)
+// Railway için web server
 // =========================
 const app = express();
 
 app.get("/", (_req, res) => {
-  res.status(200).send("Bot aktif.");
+  res.send("Bot aktif");
 });
 
 app.listen(PORT, () => {
-  console.log(`Web server ${PORT} portunda çalışıyor.`);
+  console.log(`Web server çalışıyor: ${PORT}`);
 });
 
 // =========================
@@ -48,142 +49,96 @@ const client = new Client({
   ]
 });
 
-let reconnecting = false;
-
+// =========================
+// SES BAĞLANTISI
+// =========================
 async function connectToVoice() {
   try {
     const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
-    if (!guild) {
-      console.log("Guild bulunamadı.");
-      return;
-    }
+    if (!guild) return console.log("Guild bulunamadı");
 
     const channel = await guild.channels.fetch(VOICE_CHANNEL_ID).catch(() => null);
-    if (!channel) {
-      console.log("Ses kanalı bulunamadı.");
-      return;
+    if (!channel || channel.type !== ChannelType.GuildVoice) {
+      return console.log("Ses kanalı bulunamadı");
     }
 
-    if (channel.type !== ChannelType.GuildVoice) {
-      console.log("VOICE_CHANNEL_ID bir ses kanalı değil.");
-      return;
+    let connection = getVoiceConnection(guild.id);
+
+    if (!connection) {
+      connection = joinVoiceChannel({
+        channelId: channel.id,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: true,
+      });
+
+      console.log("Ses kanalına bağlandı");
     }
-
-    const existing = getVoiceConnection(guild.id);
-    if (existing && existing.joinConfig.channelId === channel.id) {
-      console.log("Bot zaten hedef ses kanalında.");
-      return;
-    }
-
-    if (existing) {
-      try {
-        existing.destroy();
-      } catch (err) {
-        console.log("Eski bağlantı kapatılamadı:", err.message);
-      }
-    }
-
-    const connection = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
-      selfDeaf: true,
-      selfMute: false,
-    });
-
-    console.log(`Ses kanalına bağlanılıyor: ${channel.name}`);
-
-    connection.on(VoiceConnectionStatus.Ready, () => {
-      reconnecting = false;
-      console.log(`Ses kanalına bağlandı: ${channel.name}`);
-    });
 
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
-      if (reconnecting) return;
-      reconnecting = true;
-
-      console.log("Ses bağlantısı koptu, tekrar bağlanma deneniyor...");
+      console.log("Ses düştü, tekrar bağlanıyor...");
 
       try {
         await Promise.race([
-          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-          entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+          entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5000),
         ]);
-
-        reconnecting = false;
       } catch {
-        try {
-          connection.destroy();
-        } catch (err) {
-          console.log("Bağlantı kapatma hatası:", err.message);
-        }
-
-        setTimeout(async () => {
-          reconnecting = false;
-          await connectToVoice();
-        }, 5000);
+        connection.destroy();
+        setTimeout(connectToVoice, 5000);
       }
     });
+
   } catch (err) {
-    reconnecting = false;
-    console.error("connectToVoice hatası:", err);
+    console.log("Ses hatası:", err.message);
   }
 }
 
-async function sendTempWelcome(member) {
+// =========================
+// HOŞ GELDİN MESAJI
+// =========================
+client.on(Events.GuildMemberAdd, async (member) => {
+  if (member.guild.id !== GUILD_ID) return;
+
   try {
-    const channel = await member.guild.channels.fetch(WELCOME_CHANNEL_ID).catch(() => null);
+    const channel = await member.guild.channels.fetch(WELCOME_CHANNEL_ID);
 
-    if (!channel) {
-      console.log("Hoş geldin kanalı bulunamadı.");
-      return;
-    }
+    if (!channel || !channel.isTextBased()) return;
 
-    if (!channel.isTextBased()) {
-      console.log("WELCOME_CHANNEL_ID yazı kanalı değil.");
-      return;
-    }
+    const msg = await channel.send(`Hoş geldin ${member}`);
 
-    const msg = await channel.send(`Hoş geldin **${member.user.username}**`);
-
-    setTimeout(async () => {
-      try {
-        await msg.delete();
-      } catch (err) {
-        console.log("Mesaj silinemedi:", err.message);
-      }
+    setTimeout(() => {
+      msg.delete().catch(() => {});
     }, DELETE_AFTER_MS);
-  } catch (err) {
-    console.error("sendTempWelcome hatası:", err);
-  }
-}
 
-client.once(Events.ClientReady, async (readyClient) => {
-  console.log(`${readyClient.user.tag} aktif!`);
+  } catch (err) {
+    console.log("Mesaj hatası:", err.message);
+  }
+});
+
+// =========================
+// BOT HAZIR OLUNCA
+// =========================
+client.once(Events.ClientReady, async () => {
+  console.log(`${client.user.tag} aktif`);
   await connectToVoice();
 });
 
-client.on(Events.GuildMemberAdd, async (member) => {
-  if (member.guild.id !== GUILD_ID) return;
-  await sendTempWelcome(member);
-});
-
-// Bot herhangi bir nedenle sesten düşerse yeniden bağlanmayı dene
-client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
-  if (!client.user) return;
-
-  // Bot bir kanaldan düştüyse
+// =========================
+// BOT Sesten düşerse tekrar bağlan
+// =========================
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
   if (
-    oldState.member &&
-    oldState.member.id === client.user.id &&
+    oldState.member?.id === client.user.id &&
     oldState.channelId &&
     !newState.channelId
   ) {
-    console.log("Bot ses kanalından düştü, yeniden bağlanılıyor...");
-    setTimeout(async () => {
-      await connectToVoice();
-    }, 5000);
+    console.log("Bot sesten düştü tekrar giriyor...");
+    setTimeout(connectToVoice, 5000);
   }
 });
 
+// =========================
+// LOGIN
+// =========================
 client.login(TOKEN);
